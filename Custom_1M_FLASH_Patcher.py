@@ -5,7 +5,7 @@
 
 import struct, sys, re, os, copy, hashlib
 
-print("Custom 1M FLASH Patcher v2.0\nby Lesserkuma\n")
+print("Custom 1M FLASH Patcher v3.0\nby Lesserkuma\n")
 
 patch_data = {
 	"ProgramFlashSector_Bootleg": bytearray.fromhex("FEB400B5021CF70000001F231A401203E0273F05174310263602E0221203131C5532120255322A331B02AA33AA24147055251D70A02515700D1C0C783C70C0463D78AC42FBD101310137013E002EEDD101BC8646FEBC00207047"),
@@ -21,9 +21,13 @@ def ErrorExit(msg):
 	input("Press ENTER to exit.\n")
 	sys.exit(1)
 
-if len(sys.argv) != 2: ErrorExit(f"Error: No file specified. Drag & drop your file onto the executable or run from terminal like so:\n{os.path.split(sys.argv[0])[1]} file.gba\n")
+if len(sys.argv) != 2:
+	file = input("Enter ROM file path: ")
+	if file.strip() == "":
+		ErrorExit(f"Error: No file specified. You can also drag & drop your file onto the executable or run from terminal like so:\n{os.path.split(sys.argv[0])[1]} file.gba\n")
+else:
+	file = sys.argv[1]
 
-file = sys.argv[1]
 print(f"File: {file}")
 try:
 	with open(file, "rb") as f: buffer = bytearray(f.read())
@@ -36,6 +40,7 @@ print("")
 print("Title: " + buffer[0xA0:0xAC].decode("ASCII", "ignore"))
 print("Game Code: " + buffer[0xAC:0xB0].decode("ASCII", "ignore"))
 
+gcc_used = False
 flashlibs = []
 supported_flashlibs = [ "FLASH1M_V103", "FLASH1M_V102", "FLASH512_V133", "FLASH512_V131", "FLASH512_V130", "FLASH_V126", "FLASH_V125", "FLASH_V124", "FLASH_V123", "FLASH_V121", "FLASH_V120" ]
 for temp in supported_flashlibs:
@@ -62,12 +67,17 @@ for (flashlib, offset) in flashlibs:
 	# SwitchFlashBank
 	if "FLASH1M" in flashlib:
 		func_size = 0x1C
-		o_SetFlashBank = buffer.find(bytearray.fromhex("0006000E054BAA211970054A55211170B0211970E021090508707047"))
-		print("SwitchFlashBank:".ljust(20) + f"0x{o_SetFlashBank:X}", end="")
+		o_SetFlashBank = buffer.find(bytearray.fromhex("0006000E054BAA211970054A55211170B0211970E021090508707047")) # agbcc
 		if o_SetFlashBank == -1:
-			print("\n- Stubbed function or already patched.")
-			input("Press ENTER to continue.\n")
-			continue
+			o_SetFlashBank = buffer.find(bytearray.fromhex("AA225521054B1A70054A1170B0221A70E0230006000E1B0518707047")) # gcc
+			if o_SetFlashBank != -1:
+				gcc_used = True
+				print("- GCC use detected.")
+			else:
+				print("SwitchFlashBank:".ljust(20) + "Stubbed function or already patched.")
+				input("Press ENTER to continue.\n")
+				continue
+		print("SwitchFlashBank:".ljust(20) + f"0x{o_SetFlashBank:X}", end="")
 		print(f" (0x{func_size:X} bytes)")
 		func_bytes_head = bytearray()
 		func_bytes_tail = bytearray()
@@ -76,6 +86,31 @@ for (flashlib, offset) in flashlibs:
 		func_bytes = func_bytes_body
 		if len(func_bytes) > func_size: ErrorExit("\nError: Not enough space for the new code.")
 		buffer[o_SetFlashBank:o_SetFlashBank+len(func_bytes)] = func_bytes
+		
+		if gcc_used:
+			# Patch ReadFlash to call our SwitchFlashBank function
+			func_size = 0x1A
+			o_ReadFlash = buffer.find(bytearray.fromhex("AA2555261C4B1D701C4D2E70B0251D70E02300011B05000E1870"))
+			if o_ReadFlash == -1:
+				print("ReadFlash:".ljust(20) + "Stubbed function or already patched.")
+				input("Press ENTER to continue.\n")
+				continue
+			print("ReadFlash:".ljust(20) + f"0x{o_ReadFlash:X}", end="")
+			print(f" (0x{func_size:X} bytes)")
+			
+			func_bytes_head = bytearray()
+			func_bytes_tail = bytearray()
+			func_bytes_body = bytearray.fromhex("0001 1B05 000E 01B4 04B4 F7000000 04BC 01BC C046 C046 C046 C046")
+			flashbank_pointer_offset = func_bytes_body.find(bytearray.fromhex("F7000000"))
+			flashbank_pointer = (((o_ReadFlash + flashbank_pointer_offset) - o_SetFlashBank) >> 1) + 2
+			flashbank_pointer = (0x1000000 - flashbank_pointer) & 0xFFFFFF | (0xF7 << 24)
+			func_bytes_body[flashbank_pointer_offset:flashbank_pointer_offset+2] = struct.pack("<H", flashbank_pointer >> 16 & 0xFFFF)
+			func_bytes_body[flashbank_pointer_offset+2:flashbank_pointer_offset+4] = struct.pack("<H", flashbank_pointer & 0xFFFF)
+			
+			func_bytes_body += bytearray(func_size - len(func_bytes_body))
+			func_bytes = func_bytes_body
+			if len(func_bytes) > func_size: ErrorExit("\nError: Not enough space for the new code.")
+			buffer[o_ReadFlash:o_ReadFlash+len(func_bytes)] = func_bytes
 
 	# EraseFlashSector
 	if "FLASH1M" in flashlib:
@@ -85,8 +120,12 @@ for (flashlib, offset) in flashlibs:
 			o_EraseFlashSector = offset + 0x8
 		o_EraseFlashSector = struct.unpack("<I", buffer[o_EraseFlashSector:o_EraseFlashSector+4])[0] - 0x8000000 - 1
 		print("EraseFlashSector:".ljust(20) + f"0x{o_EraseFlashSector:X}", end="")
-		func_bytes_head = bytearray.fromhex("F0B5 90B0")
-		func_bytes_tail = bytearray.fromhex("10B0 F0BC 02BC 0847")
+		if not gcc_used:
+			func_bytes_head = bytearray.fromhex("F0B5 90B0")
+			func_bytes_tail = bytearray.fromhex("10B0 F0BC 02BC 0847")
+		else:
+			func_bytes_head = bytearray.fromhex("F0B5 4F46")
+			func_bytes_tail = bytearray.fromhex("0402 0004 AA2A 000E")
 		func_bytes_body = copy.copy(patch_data["EraseFlashSector_Bootleg_1M"])
 		func_size = buffer[o_EraseFlashSector:].find(func_bytes_tail)
 		if buffer[o_EraseFlashSector:o_EraseFlashSector + len(func_bytes_head)] != func_bytes_head or func_size == -1:
@@ -141,8 +180,13 @@ for (flashlib, offset) in flashlibs:
 			o_ProgramFlashSector = offset
 		o_ProgramFlashSector = struct.unpack("<I", buffer[o_ProgramFlashSector:o_ProgramFlashSector+4])[0] - 0x8000000 - 1
 		print("ProgramFlashSector:".ljust(20) + f"0x{o_ProgramFlashSector:X}", end="")
-		func_bytes_head = bytearray.fromhex("F0B5 90B0 0F1C")
-		func_bytes_tail = bytearray.fromhex("10B0 F0BC 02BC 0847")
+		if not gcc_used:
+			func_bytes_head = bytearray.fromhex("F0B5 90B0 0F1C")
+			func_bytes_tail = bytearray.fromhex("10B0 F0BC 02BC 0847")
+		else:
+			func_bytes_head = bytearray.fromhex("F0B5 5746 4E46")
+			func_bytes_tail = bytearray.fromhex("000E FF80 0000 1847")
+		
 		func_bytes_body = copy.copy(patch_data["ProgramFlashSector_Bootleg"])
 		func_size = buffer[o_ProgramFlashSector:].find(func_bytes_tail)
 		if buffer[o_ProgramFlashSector:o_ProgramFlashSector + len(func_bytes_head)] != func_bytes_head or func_size == -1:
@@ -201,9 +245,15 @@ for (flashlib, offset) in flashlibs:
 		func_bytes_head = bytearray.fromhex("90B5 93B0")
 		func_bytes_tail = bytearray.fromhex("13B0 90BC 02BC 0847")
 	else:
-		o_ReadFlashId = buffer.find(bytearray.fromhex("034A101C08E000005555000EAA2A000E")) - 0x20
-		func_bytes_head = bytearray.fromhex("30B5 91B0")
-		func_bytes_tail = bytearray.fromhex("11B0 30BC 02BC 0847")
+		if not gcc_used:
+			o_ReadFlashId = buffer.find(bytearray.fromhex("034A101C08E000005555000EAA2A000E")) - 0x20
+			func_bytes_head = bytearray.fromhex("30B5 91B0")
+			func_bytes_tail = bytearray.fromhex("11B0 30BC 02BC 0847")
+		else:
+			o_ReadFlashId = buffer.find(bytearray.fromhex("11A9881A423811000988013B02321152")) - 0x1C
+			func_bytes_head = bytearray.fromhex("30B5 91B0")
+			func_bytes_tail = bytearray.fromhex("11B0 30BC 02BC 0847")
+	
 	print("ReadFlashId:".ljust(20) + f"0x{o_ReadFlashId:X}", end="")
 	func_size = buffer[o_ReadFlashId:].find(func_bytes_tail)
 	if buffer[o_ReadFlashId:o_ReadFlashId + len(func_bytes_head)] != func_bytes_head or func_size == -1:

@@ -1,6 +1,6 @@
 ﻿# Custom 1M FLASH Patcher (by Lesserkuma)
 
-A tool for patching Game Boy Advance ROMs that use the 512K FLASH or 1M FLASH save type for certain repro cartridges with a custom 1M FLASH save type chip.
+A tool for patching Game Boy Advance ROMs that use the 512K FLASH or 1M FLASH save type for certain repro cartridges with a custom FLASH save type chip.
 
 The Windows executable is available in the [Releases](https://github.com/lesserkuma/Custom_1M_FLASH_Patcher/releases) section.
 
