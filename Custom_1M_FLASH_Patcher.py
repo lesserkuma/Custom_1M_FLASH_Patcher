@@ -3,9 +3,16 @@
 # Custom 1M FLASH Patcher
 # Author: Lesserkuma (github.com/lesserkuma)
 
-import struct, sys, re, os, copy, hashlib
+import struct, sys, re, os, copy, hashlib, argparse
 
-print("Custom 1M FLASH Patcher v3.0\nby Lesserkuma\n")
+class ArgParseCustomFormatter(argparse.ArgumentDefaultsHelpFormatter, argparse.RawDescriptionHelpFormatter): pass
+cart_types = [ "SST25VF064C, SST49LF080A, 0xFFFF", "SST39VF6401B" ]
+
+print("Custom 1M FLASH Patcher v4.0\nby Lesserkuma\n")
+parser = argparse.ArgumentParser()
+parser.add_argument("--save-chip-type", help="choose between type 1 (" + cart_types[0] + ") and 2 (" + cart_types[1] + ")", type=int, default=0)
+parser.add_argument("path", nargs="?", default=None, help="source file path")
+args = parser.parse_args()
 
 patch_data = {
 	"ProgramFlashSector_Bootleg": bytearray.fromhex("FEB400B5021CF70000001F231A401203E0273F05174310263602E0221203131C5532120255322A331B02AA33AA24147055251D70A02515700D1C0C783C70C0463D78AC42FBD101310137013E002EEDD101BC8646FEBC00207047"),
@@ -21,12 +28,12 @@ def ErrorExit(msg):
 	input("Press ENTER to exit.\n")
 	sys.exit(1)
 
-if len(sys.argv) != 2:
-	file = input("Enter ROM file path: ")
+if args.path is None:
+	file = input("Enter ROM file path: ").strip("\"")
 	if file.strip() == "":
 		ErrorExit(f"Error: No file specified. You can also drag & drop your file onto the executable or run from terminal like so:\n{os.path.split(sys.argv[0])[1]} file.gba\n")
 else:
-	file = sys.argv[1]
+	file = args.path
 
 print(f"File: {file}")
 try:
@@ -39,6 +46,18 @@ except Exception as e:
 print("")
 print("Title: " + buffer[0xA0:0xAC].decode("ASCII", "ignore"))
 print("Game Code: " + buffer[0xAC:0xB0].decode("ASCII", "ignore"))
+
+if args.save_chip_type == 0:
+	save_chip_type = input("\nSelect the save chip in use by your cartridge.\nThe FlashGBX software’s “Analyze Flash Cart” function may show this information.\n 1) " + cart_types[0] + "\n 2) " + cart_types[1] + "\nEnter number 1-2 [1]: ").strip()
+	if save_chip_type == "": save_chip_type = 1
+else:
+	save_chip_type = args.save_chip_type
+save_chip_type = int(save_chip_type)
+if save_chip_type > len(cart_types): save_chip_type = 1
+if save_chip_type == 2:
+	# Change the erase command to 0x50 because 0x30 erases a larger block on those chips
+	patch_data["EraseFlashSector_Bootleg_1M"][0x40] = 0x50
+	patch_data["EraseFlashSector_Bootleg_512K"][0x3C] = 0x50
 
 gcc_used = False
 flashlibs = []
@@ -270,6 +289,8 @@ for (flashlib, offset) in flashlibs:
 	func_bytes = func_bytes_body
 	if len(func_bytes) > func_size: ErrorExit("\nError: Not enough space for the new code.")
 	buffer[o_ReadFlashId:o_ReadFlashId+len(func_bytes)] = func_bytes	
+
+print("\nSave Chip Type: " + cart_types[save_chip_type - 1])
 
 if hashlib.sha256(buffer).digest() == rom_hash:
 	print("\nThis file could not be patched.\n")
